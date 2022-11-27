@@ -1,0 +1,19 @@
+{
+    "required_api_version": "^2.0.0",
+    "name": "Fedora Packager",
+    "description": "Set of utilities that a Fedora packager might find useful.",
+    "developer_name": "Troy Curtis, Jr.",
+    "icon": "images/icon.png",
+    "options": {
+        "query_debounce": 1.0
+    },
+    "preferences": [
+        {
+            "id": "fedpkg_kw",
+            "type": "keyword",
+            "name": "Fedora package search",
+            "description": "Search the src.fedoraproject.org for packages matching the argument, selecting an item will open a browser window to that packages page.",
+            "default_value": "fpkg"
+        }
+    ]
+}
