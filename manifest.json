@@ -14,13 +14,6 @@
             "name": "Fedora package search",
             "description": "Search the src.fedoraproject.org for packages matching the argument, selecting an item will open a browser window to that packages page.",
             "default_value": "fpkg"
-    },
-        {
-            "id": "finfo_kw",
-            "type": "keyword",
-            "name": "Fedora package info",
-            "description": "Get various bits of information about a package",
-            "default_value": "finfo"
         }
     ]
 }
