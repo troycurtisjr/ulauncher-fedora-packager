@@ -1,5 +1,8 @@
 import logging
+import os.path
 import requests
+from datetime import datetime, timedelta
+import koji
 
 from ulauncher.api.client.Extension import Extension
 from ulauncher.api.client.EventListener import EventListener
@@ -23,11 +26,7 @@ class FedoraPackagerExtension(Extension):
         super().__init__()
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
 
-
-class KeywordQueryEventListener(EventListener):
-
-    def on_event(self, event, extension):
-        search_term = event.get_argument()
+def search_pkg_src(search_term):
         if not search_term:
             return
 
@@ -55,7 +54,100 @@ class KeywordQueryEventListener(EventListener):
                                              description=res.url,
                                              on_enter=HideWindowAction()))
 
-        return RenderResultListAction(items)
+        return items
+
+
+def get_this_user():
+    with open(os.path.expanduser("~/.fedora.upn")) as fp:
+        return fp.read().strip()
+
+
+def fetch_user_projects(user):
+    projects = []
+    fetch_url = f"https://src.fedoraproject.org/api/0/user/{user}"
+    session = requests.session()
+    while fetch_url:
+        rsp = session.get(fetch_url)
+        rsp_data = rsp.json()
+        for repo in rsp_data.get("repos"):
+            projects.append(repo)
+        fetch_url = rsp_data.get("repos_pagination", {}).get("next")
+
+    return projects
+
+def return_project_list():
+    projects = fetch_user_projects(get_this_user())
+    items = []
+    for project in projects:
+        items.append(ExtensionResultItem(icon="images/icon.png",
+                                         name=project["fullname"],
+                                         description=project["description"],
+                                         on_enter=OpenUrlAction(project["full_url"])
+                                         ))
+
+    return items
+
+
+def get_builds(package):
+    session = koji.ClientSession("https://koji.fedoraproject.org/kojihub")
+    pkginfo = session.getPackage(package)
+    if not pkginfo:
+        return [ExtensionResultItem(icon="images/icon.png",
+                                    name=f"Nothing found for {package}",
+                                    description="",
+                                    on_enter=HideWindowAction()
+                                    )]
+    pkg_id = pkginfo["id"]
+    cutoff_dt = datetime.now() - timedelta(days=7)
+    cutoff_ts = int(cutoff_dt.timestamp())
+    items = []
+    for build in session.listBuilds(packageID=pkg_id, createdAfter=cutoff_ts):
+        name = "%s [%s]" % (build.get("nvr", "Unknown"), koji.BUILD_STATES[build["state"]])
+        useful_time_ts = build.get("completion_ts") or build.get("start_ts") or build.get("creation_ts")
+        useful_time_dt = datetime.fromtimestamp(useful_time_ts).astimezone()
+        useful_time = useful_time_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        user = build.get("owner_name") or build.get("owner_id", "Unknown User")
+        item = ExtensionResultItem(
+            icon="images/icon.png",
+            name=name,
+            description=f"{user} - {useful_time}",
+            on_enter=OpenUrlAction(f"https://koji.fedoraproject.org/koji/buildinfo?buildID={build['build_id']}")
+        )
+        item.sort_key = (datetime.now().astimezone() - useful_time_dt).total_seconds()
+        items.append(item)
+
+    return sorted(items, key=lambda x: x.sort_key)
+
+
+def pkg_actions(arg):
+    if not arg:
+        return return_project_list()
+
+    return get_builds(arg.strip())
+
+
+def wrap_results(items, keyword):
+    """
+    Wrap a raw item list with RenderResultListAction, and make sure each item has the keyword
+    for proper highlighting.
+    """
+    if not items:
+        return None
+    for item in items:
+        item.keyword = keyword
+    return RenderResultListAction(items)
+
+
+class KeywordQueryEventListener(EventListener):
+
+    def on_event(self, event, extension):
+        kw = event.get_keyword()
+        arg = event.get_argument()
+        if kw == "fpkg":
+            return wrap_results(search_pkg_src(arg), kw)
+
+        if kw == "finfo":
+            return wrap_results(pkg_actions(arg), kw)
 
 
 if __name__ == '__main__':
