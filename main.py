@@ -11,6 +11,7 @@ from ulauncher.api.shared.item.ExtensionResultItem import ExtensionResultItem
 from ulauncher.api.shared.action.RenderResultListAction import RenderResultListAction
 from ulauncher.api.shared.action.HideWindowAction import HideWindowAction
 from ulauncher.api.shared.action.OpenUrlAction import OpenUrlAction
+from ulauncher.api.shared.action.SetUserQueryAction import SetUserQueryAction
 
 logger = logging.getLogger("fedora-packager")
 
@@ -19,6 +20,38 @@ NS_ORDER = {
     "fork": 1
 }
 
+"""
+Example session:
+
+fpkg ra<pause>
+    searches for packages matching ra
+
+finfo<pause>
+    list users current packages
+
+finfo ra<pause>
+    searches for packages matching ra
+
+finfo rarian <pause> (note the trailing space)
+    Returns list of possible package actions
+    - Goto package source
+    - Get package builds
+    - Get package bugs
+    - Get package updates
+
+finfo rarian builds<pause>
+    Returns list of recent builds for the given package
+     - Each entry will go to build status page when selected
+
+finfo rarian bugs<pause>
+    Returns list of latest bugs for the given package
+     - Each entry will go to bug status page when selected
+
+finfo rarian updates<pause>
+    Returns list of latest updates for the given package
+     - Each entry will go to update status page when selected
+
+"""
 
 class FedoraPackagerExtension(Extension):
 
@@ -26,39 +59,41 @@ class FedoraPackagerExtension(Extension):
         super().__init__()
         self.subscribe(KeywordQueryEvent, KeywordQueryEventListener())
 
-def search_pkg_src(search_term):
-        if not search_term:
-            return
+def search_pkg_src(keyword, search_arg):
 
-        res = requests.get("https://src.fedoraproject.org/api/0/projects",
-                           params={
-                               "pattern": f"*{search_term.strip()}*",
-                               "short": 1,
-                               "per_page": 20
-                           })
-        logger.debug("Request URI: %s", res.url)
-        items = []
-        # Only ever use the first page, since more than 20 results won't be
-        # useful in ulauncher anyway.
-        for project in res.json().get("projects", []):
-            items.append(ExtensionResultItem(icon='images/icon.png',
-                                             name=project["fullname"],
-                                             description=project["description"],
-                                             on_enter=OpenUrlAction(f"https://src.fedoraproject.org/{project['fullname']}")))
+    res = requests.get("https://src.fedoraproject.org/api/0/projects",
+                       params={
+                           "pattern": f"*{search_arg.strip()}*",
+                           "short": 1,
+                           "per_page": 20,
+                           "fork": False
+                       })
+    logger.debug("Request URI: %s", res.url)
+    items = []
+    # Only ever use the first page, since more than 20 results won't be
+    # useful in ulauncher anyway.
+    # on_enter=OpenUrlAction(f"https://src.fedoraproject.org/{project['fullname']}")))
+    for project in res.json().get("projects", []):
+        items.append(ExtensionResultItem(icon='images/icon.png',
+                                         keyword=keyword,
+                                         name=project["fullname"],
+                                         description=project["description"],
+                                         on_enter=SetUserQueryAction(keyword + " " + project["name"] + " ")))
 
-        items = sorted(items,
-                       key=lambda x: (NS_ORDER.get(x.name.split("/")[0], 2), len(x.name)))
-        if not items:
-            items.append(ExtensionResultItem(icon='images/icon.png',
-                                             name="Nothing found",
-                                             description=res.url,
-                                             on_enter=HideWindowAction()))
+    items = sorted(items,
+                   key=lambda x: (NS_ORDER.get(x.name.split("/")[0], 2), len(x.name)))
+    if not items:
+        items.append(ExtensionResultItem(icon='images/icon.png',
+                                         keyword=keyword,
+                                         name="Nothing found",
+                                         description=res.url,
+                                         on_enter=HideWindowAction()))
 
-        return items
+    return RenderResultListAction(items)
 
 
 def get_this_user():
-    with open(os.path.expanduser("~/.fedora.upn")) as fp:
+    with open(os.path.expanduser("~/.fedora.upn"), encoding='utf8') as fp:
         return fp.read().strip()
 
 
@@ -75,20 +110,22 @@ def fetch_user_projects(user):
 
     return projects
 
-def return_project_list():
+def return_project_list(event):
     projects = fetch_user_projects(get_this_user())
+    kw = event.get_keyword()
     items = []
     for project in projects:
         items.append(ExtensionResultItem(icon="images/icon.png",
+                                         keyword=kw,
                                          name=project["fullname"],
                                          description=project["description"],
-                                         on_enter=OpenUrlAction(project["full_url"])
+                                         on_enter=SetUserQueryAction(kw + " " + project["name"] + " ")
                                          ))
 
-    return items
+    return RenderResultListAction(items)
 
 
-def get_builds(package):
+def get_builds(keyword, package):
     session = koji.ClientSession("https://koji.fedoraproject.org/kojihub")
     pkginfo = session.getPackage(package)
     if not pkginfo:
@@ -109,6 +146,7 @@ def get_builds(package):
         user = build.get("owner_name") or build.get("owner_id", "Unknown User")
         item = ExtensionResultItem(
             icon="images/icon.png",
+            keyword=keyword,
             name=name,
             description=f"{user} - {useful_time}",
             on_enter=OpenUrlAction(f"https://koji.fedoraproject.org/koji/buildinfo?buildID={build['build_id']}")
@@ -116,38 +154,55 @@ def get_builds(package):
         item.sort_key = (datetime.now().astimezone() - useful_time_dt).total_seconds()
         items.append(item)
 
-    return sorted(items, key=lambda x: x.sort_key)
+    return RenderResultListAction(sorted(items, key=lambda x: x.sort_key))
 
 
-def pkg_actions(arg):
+def get_package_options(keyword, package):
+    return RenderResultListAction([
+        ExtensionResultItem(
+            icon="images/icon.png",
+            keyword=keyword,
+            name=f"Goto {package} src",
+            description=f"Open the dist-git for {package} in a browser.",
+            on_enter=OpenUrlAction(f"https://src.fedoraproject.org/rpms/{package}")
+        ),
+        ExtensionResultItem(
+            icon="images/icon.png",
+            keyword=keyword,
+            name=f"{keyword} {package} builds",
+            description=f"Lists recent builds for {package}",
+            on_enter=SetUserQueryAction(f"{keyword} {package} builds")
+        ),
+    ])
+
+
+def pkg_actions(event):
+    arg = event.get_argument()
     if not arg:
-        return return_project_list()
+        return return_project_list(event)
 
-    return get_builds(arg.strip())
+    kw = event.get_keyword()
+    args = arg.split()
+    if len(args) == 1 and arg[-1] != " ":
+        return search_pkg_src(kw, args[0])
 
+    if len(args) == 1:
+        return get_package_options(kw, args[0])
 
-def wrap_results(items, keyword):
-    """
-    Wrap a raw item list with RenderResultListAction, and make sure each item has the keyword
-    for proper highlighting.
-    """
-    if not items:
-        return None
-    for item in items:
-        item.keyword = keyword
-    return RenderResultListAction(items)
+    if len(args) == 2:
+        if args[1] == "builds":
+            return get_builds(kw, args[0])
 
 
 class KeywordQueryEventListener(EventListener):
 
     def on_event(self, event, extension):
         kw = event.get_keyword()
-        arg = event.get_argument()
         if kw == "fpkg":
-            return wrap_results(search_pkg_src(arg), kw)
+            return search_pkg_src(event)
 
         if kw == "finfo":
-            return wrap_results(pkg_actions(arg), kw)
+            return pkg_actions(event)
 
 
 if __name__ == '__main__':
